@@ -1,6 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/", "destination": "/flow_app.html" },
-    { "source": "/(.*)", "destination": "/flow_app.html" }
-  ]
-}
