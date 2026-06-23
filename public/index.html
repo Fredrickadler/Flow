@@ -1,4 +1,15 @@
-
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>FLOW</title>
+  <!-- Telegram Mini App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -8,7 +19,7 @@
 }
 @media(prefers-color-scheme:dark){:root:not(.light){--bg-0:#212121;--bg-100:#262624;--bg-200:#30302E;--bg-300:#454540;--text-100:#ECECEC;--text-200:#E1E1E0;--text-300:#B4B4B4;--text-400:#8A8A88;--text-500:#6B6B65;--accent:#D2996E;--accent-hover:#E5AA7F;}}
 :root.dark{--bg-0:#212121;--bg-100:#262624;--bg-200:#30302E;--bg-300:#454540;--text-100:#ECECEC;--text-200:#E1E1E0;--text-300:#B4B4B4;--text-400:#8A8A88;--text-500:#6B6B65;--accent:#D2996E;--accent-hover:#E5AA7F;}
-body{background:var(--bg-0);font-family:'Inter',system-ui,sans-serif;color:var(--text-100);height:100vh;display:flex;flex-direction:column;align-items:center;padding:0;gap:0;overflow:hidden}
+body{background:var(--bg-0);font-family:'Inter',system-ui,sans-serif;color:var(--text-100);height:100vh;height:100dvh;display:flex;flex-direction:column;align-items:center;padding:0;gap:0;overflow:hidden;touch-action:pan-y;-webkit-user-select:none;user-select:none;overscroll-behavior:none;}
 
 /* ── Top-bar ── */
 .topbar{
@@ -92,8 +103,8 @@ body{background:var(--bg-0);font-family:'Inter',system-ui,sans-serif;color:var(-
 /* ── Hero block: centered on screen, moves to top on chat start ── */
 .hero{
   position:fixed;
-  top:50%;left:50%;
-  transform:translate(-50%,-52%);
+  top:38%;left:50%;
+  transform:translate(-50%,-50%);
   display:flex;flex-direction:column;align-items:center;
   pointer-events:none;
   transition:top 0.6s cubic-bezier(0.4,0,0.2,1),transform 0.6s cubic-bezier(0.4,0,0.2,1);
@@ -136,7 +147,7 @@ body{background:var(--bg-0);font-family:'Inter',system-ui,sans-serif;color:var(-
 .hero-spacer.chat-started{height:60px;}
 
 .chat-wrapper{width:100%;max-width:600px;display:flex;flex-direction:column;flex:1;min-height:0;padding:0 16px 16px}
-.chat-scroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:4px 0 16px;scrollbar-width:none;-ms-overflow-style:none}
+.chat-scroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:4px 0 16px;scrollbar-width:none;-ms-overflow-style:none;touch-action:pan-y;-webkit-overflow-scrolling:touch;}
 .chat-scroll::-webkit-scrollbar{display:none}
 
 /* chat bubbles */
@@ -637,17 +648,16 @@ function addBubble(role,text,loading=false){
 }
 
 async function googleTranslate(text, sl, tl){
-  // Uses Google Translate unofficial endpoint — no API key needed
-  const url='https://translate.googleapis.com/translate_a/single?client=gtx&sl='+sl+'&tl='+tl+'&dt=t&q='+encodeURIComponent(text);
-  const res=await fetch(url);
+  // از proxy سرور استفاده می‌کنیم تا CORS نداشته باشیم
+  const res=await fetch('/api/translate',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text,sl,tl})
+  });
   if(!res.ok)throw new Error('HTTP '+res.status);
   const data=await res.json();
-  // data[0] is array of [translated_chunk, original_chunk, ...]
-  let result='';
-  if(Array.isArray(data[0])){
-    for(const chunk of data[0]){if(chunk&&chunk[0])result+=chunk[0];}
-  }
-  return result.trim()||text;
+  if(data.error)throw new Error(data.error);
+  return data.translated||text;
 }
 
 async function doTranslate(){
@@ -1064,4 +1074,55 @@ fontSlider.addEventListener('input',()=>{
   ta.style.fontSize=sz;
 });
 
+// ── Telegram Mini App Init ──
+if(window.Telegram&&window.Telegram.WebApp){
+  const tg=window.Telegram.WebApp;
+  tg.ready();
+  tg.expand();
+  // جلوگیری از swipe برای بستن
+  if(typeof tg.disableVerticalSwipes==='function') tg.disableVerticalSwipes();
+  if(typeof tg.enableClosingConfirmation==='function') tg.enableClosingConfirmation();
+  // تم تلگرام رو با تم اپ هماهنگ کن
+  if(tg.colorScheme==='dark'){isDark=true;applyTheme();}
+  else{isDark=false;applyTheme();}
+}
+
+// ── Block pinch-zoom و حرکت ناخواسته با JS ──
+document.addEventListener('touchstart', function(e){
+  if(e.touches.length>1) e.preventDefault();
+},{passive:false});
+
+document.addEventListener('touchmove', function(e){
+  if(e.touches.length>1){
+    e.preventDefault();
+    return;
+  }
+  // اجازه اسکرول فقط توی chat-scroll
+  const chatScroll=document.getElementById('chat-messages');
+  if(chatScroll&&chatScroll.contains(e.target)) return;
+  // بقیه جاها اسکرول نشه
+  e.preventDefault();
+},{passive:false});
+
+// جلوگیری از double-tap zoom
+let lastTap=0;
+document.addEventListener('touchend',function(e){
+  const now=Date.now();
+  if(now-lastTap<300) e.preventDefault();
+  lastTap=now;
+},{passive:false});
+
+// ── درخواست دسترسی میکروفون هنگام لود ──
+async function requestMicPermission(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    stream.getTracks().forEach(t=>t.stop());
+  }catch(e){
+    console.log('Mic permission not granted yet');
+  }
+}
+requestMicPermission();
+
 </script>
+</body>
+</html>
