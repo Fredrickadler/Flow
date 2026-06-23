@@ -896,9 +896,13 @@ async function ensureMicStream(){
   }catch(e){return null;}
 }
 
-// ── تشخیص اینکه آیا SpeechRecognition پشتیبانی می‌شه ──
+// ── تشخیص محیط اجرا ──
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-const hasSR=!!SR;
+// فقط روی دسکتاپ Chrome از SpeechRecognition استفاده کن
+// iOS و Android (از جمله تلگرام موبایل) از MediaRecorder استفاده می‌کنند
+const isMobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+const isTelegramWebApp=!!(window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.initData);
+const hasSR=!!SR&&!isMobile&&!isTelegramWebApp;
 
 // ── حالت ۱: SpeechRecognition (PC Chrome) ──
 function startRecSR(){
@@ -955,15 +959,42 @@ let mediaRec=null;
 let audioChunks=[];
 
 async function startRecMedia(){
+  // اگه تلگرام WebApp هست، اول از API تلگرام اجازه بگیر
+  if(isTelegramWebApp&&window.Telegram.WebApp.requestMicrophoneAccess){
+    try{
+      await new Promise((resolve,reject)=>{
+        window.Telegram.WebApp.requestMicrophoneAccess((granted)=>{
+          if(granted) resolve();
+          else reject(new Error('denied'));
+        });
+      });
+    }catch(e){
+      alert('لطفاً دسترسی میکروفون را در تنظیمات تلگرام فعال کنید.');
+      return;
+    }
+  }
+
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-    // بهترین فرمت پشتیبانی شده رو پیدا کن
-    const mimeTypes=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4','audio/mpeg'];
-    let mimeType='audio/webm';
-    for(const m of mimeTypes){if(MediaRecorder.isTypeSupported(m)){mimeType=m;break;}}
 
-    mediaRec=new MediaRecorder(stream,{mimeType});
+    // بهترین فرمت پشتیبانی شده رو پیدا کن (iOS فقط audio/mp4 داره)
+    const mimeTypes=[
+      'audio/mp4',
+      'audio/aac',
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+    ];
+    let mimeType='';
+    for(const m of mimeTypes){
+      if(MediaRecorder.isTypeSupported(m)){mimeType=m;break;}
+    }
+
+    const recOpts=mimeType?{mimeType}:{};
+    mediaRec=new MediaRecorder(stream,recOpts);
+    const actualMime=mimeType||'audio/webm';
     audioChunks=[];
+
     mediaRec.ondataavailable=e=>{if(e.data&&e.data.size>0)audioChunks.push(e.data);};
     mediaRec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
@@ -972,34 +1003,40 @@ async function startRecMedia(){
       livebar.classList.remove('on');
       stopEQ();
       if(audioChunks.length===0)return;
-      // تبدیل به base64 و ارسال به Gemini
-      const blob=new Blob(audioChunks,{type:mimeType});
-      await transcribeWithGemini(blob,mimeType);
+      const blob=new Blob(audioChunks,{type:actualMime});
+      await transcribeWithGemini(blob,actualMime);
       isRec=false;
     };
-    mediaRec.start(200); // هر ۲۰۰ms یه chunk بفرست
+
+    mediaRec.start(500);
     isRec=true;voiceMode=true;
     micBtn.classList.add('recording');
     micBtn.querySelector('i').className='ti ti-player-stop';
     livebar.classList.add('on');
+
     // EQ visual
-    eqStream=stream;
-    if(!audioCtx||audioCtx.state==='closed'){
-      audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-      analyser=audioCtx.createAnalyser();analyser.fftSize=64;
-      audioCtx.createMediaStreamSource(stream).connect(analyser);
-    }
-    startEQ();
+    try{
+      eqStream=stream;
+      if(!audioCtx||audioCtx.state==='closed'){
+        audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+        analyser=audioCtx.createAnalyser();analyser.fftSize=64;
+        audioCtx.createMediaStreamSource(stream).connect(analyser);
+      }
+      startEQ();
+    }catch(e){}
+
   }catch(err){
-    alert('دسترسی به میکروفون رد شد: '+err.message);
+    const msg=err.name==='NotAllowedError'
+      ?'دسترسی به میکروفون رد شد. لطفاً در تنظیمات تلگرام اجازه دهید.'
+      :'خطا در دسترسی به میکروفون: '+err.message;
+    alert(msg);
   }
 }
 
 async function transcribeWithGemini(blob, mimeType){
-  // نشانگر لود
   const prev=ta.value;
-  ta.value=prev+(prev?' ':'')+'...';
-  autoH();
+  // نشانگر پردازش
+  micBtn.querySelector('i').className='ti ti-loader';
   try{
     const reader=new FileReader();
     const b64=await new Promise((res,rej)=>{
@@ -1007,21 +1044,26 @@ async function transcribeWithGemini(blob, mimeType){
       reader.onerror=rej;
       reader.readAsDataURL(blob);
     });
+    // iOS audio/mp4 رو به audio/mp4 ساده تبدیل کن
+    const cleanMime=mimeType.split(';')[0].trim()||'audio/mp4';
     const resp=await fetch('/api/transcribe-audio',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({audioData:b64,mimeType})
+      body:JSON.stringify({audioData:b64,mimeType:cleanMime})
     });
     const data=await resp.json();
-    if(data.text){
-      ta.value=prev+(prev?' ':'')+data.text;
+    if(data.text&&data.text.trim()){
+      ta.value=(prev+(prev?' ':'')+data.text).trim();
       finalTxt=ta.value;
     } else {
-      ta.value=prev; // برگرد به قبل اگه خطا داشت
+      ta.value=prev;
+      if(data.error) console.error('Transcribe error:',data.error);
     }
   }catch(e){
     ta.value=prev;
+    console.error('transcribeWithGemini error:',e);
   }
+  micBtn.querySelector('i').className='ti ti-microphone';
   autoH();updateBtn();updateTextDir();
 }
 
