@@ -1,5 +1,5 @@
 // ─── لینک مینی اپ را اینجا وارد کنید ───
-const MINI_APP_URL = process.env.MINI_APP_URL || 'https://your-app.vercel.app';
+const MINI_APP_URL = process.env.MINI_APP_URL || 'https://flow-gold-kappa.vercel.app/';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
