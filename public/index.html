@@ -977,13 +977,16 @@ async function startRecMedia(){
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
 
-    // بهترین فرمت پشتیبانی شده رو پیدا کن (iOS فقط audio/mp4 داره)
+    // بهترین فرمت پشتیبانی شده رو پیدا کن
+    // توجه: audio/mp4 و audio/aac در بعضی WebViewها (مثلاً تلگرام دسکتاپ) isTypeSupported=true
+    // برمی‌گردونن ولی واقعاً چیزی encode نمی‌کنن => خروجی خالی. به همین خاطر webm/opus اول چک می‌شه
+    // (iOS از webm پشتیبانی نمی‌کنه و خودکار به mp4 می‌افته که روی iOS واقعاً کار می‌کنه)
     const mimeTypes=[
-      'audio/mp4',
-      'audio/aac',
       'audio/webm;codecs=opus',
       'audio/webm',
       'audio/ogg;codecs=opus',
+      'audio/mp4',
+      'audio/aac',
     ];
     let mimeType='';
     for(const m of mimeTypes){
@@ -992,17 +995,25 @@ async function startRecMedia(){
 
     const recOpts=mimeType?{mimeType}:{};
     mediaRec=new MediaRecorder(stream,recOpts);
-    const actualMime=mimeType||'audio/webm';
+    const actualMime=mediaRec.mimeType||mimeType||'audio/webm';
     audioChunks=[];
 
     mediaRec.ondataavailable=e=>{if(e.data&&e.data.size>0)audioChunks.push(e.data);};
+    mediaRec.onerror=e=>{console.error('MediaRecorder error:',e.error||e);};
     mediaRec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       micBtn.classList.remove('recording');
       micBtn.querySelector('i').className='ti ti-microphone';
       livebar.classList.remove('on');
       stopEQ();
-      if(audioChunks.length===0)return;
+      const totalSize=audioChunks.reduce((s,c)=>s+c.size,0);
+      if(audioChunks.length===0||totalSize<200){
+        // داخل بعضی WebViewها (تلگرام دسکتاپ/موبایل) MediaRecorder چیزی ضبط نمی‌کنه
+        console.warn('No audio captured. chunks:',audioChunks.length,'size:',totalSize,'mime:',actualMime);
+        alert('چیزی ضبط نشد. لطفاً دوباره تلاش کنید یا چند ثانیه بیشتر صحبت کنید.');
+        isRec=false;
+        return;
+      }
       const blob=new Blob(audioChunks,{type:actualMime});
       await transcribeWithGemini(blob,actualMime);
       isRec=false;
@@ -1046,22 +1057,46 @@ async function transcribeWithGemini(blob, mimeType){
     });
     // iOS audio/mp4 رو به audio/mp4 ساده تبدیل کن
     const cleanMime=mimeType.split(';')[0].trim()||'audio/mp4';
-    const resp=await fetch('/api/transcribe-audio',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({audioData:b64,mimeType:cleanMime})
-    });
+    // آدرس مطلق بساز (داخل WebView تلگرام resolve شدن آدرس نسبی گاهی مشکل دارد)
+    const apiUrl=new URL('/api/transcribe-audio',window.location.origin).toString();
+    let resp;
+    try{
+      resp=await fetch(apiUrl,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({audioData:b64,mimeType:cleanMime})
+      });
+    }catch(networkErr){
+      console.error('Network error calling transcribe API:',networkErr);
+      ta.value=prev;
+      alert('اتصال به سرور تبدیل صدا برقرار نشد. اینترنت یا تنظیمات تلگرام را بررسی کنید.');
+      micBtn.querySelector('i').className='ti ti-microphone';
+      autoH();updateBtn();updateTextDir();
+      return;
+    }
+    if(!resp.ok){
+      let errBody='';
+      try{errBody=await resp.text();}catch(e){}
+      console.error('Transcribe API HTTP error:',resp.status,errBody);
+      ta.value=prev;
+      alert('خطا در سرویس تبدیل صدا به متن (کد '+resp.status+'). لطفاً دوباره تلاش کنید.');
+      micBtn.querySelector('i').className='ti ti-microphone';
+      autoH();updateBtn();updateTextDir();
+      return;
+    }
     const data=await resp.json();
     if(data.text&&data.text.trim()){
       ta.value=(prev+(prev?' ':'')+data.text).trim();
       finalTxt=ta.value;
     } else {
       ta.value=prev;
-      if(data.error) console.error('Transcribe error:',data.error);
+      console.error('Transcribe error:',data.error||'(empty text in response)');
+      alert(data.error?('خطا در تبدیل صدا: '+data.error):'صدایی تشخیص داده نشد. لطفاً واضح‌تر و کمی بلندتر صحبت کنید.');
     }
   }catch(e){
     ta.value=prev;
     console.error('transcribeWithGemini error:',e);
+    alert('خطای غیرمنتظره در تبدیل صدا به متن: '+(e&&e.message?e.message:e));
   }
   micBtn.querySelector('i').className='ti ti-microphone';
   autoH();updateBtn();updateTextDir();
@@ -1083,7 +1118,10 @@ function stopRec(){
     autoH();updateBtn();updateTextDir();
   } else {
     // MediaRecorder: stop کن، onstop خودش بقیه کارا رو می‌کنه
-    if(mediaRec&&mediaRec.state!=='inactive')mediaRec.stop();
+    if(mediaRec&&mediaRec.state!=='inactive'){
+      try{mediaRec.requestData();}catch(e){} // فلاش کردن آخرین تکه صدا قبل از stop (باگ بعضی WebViewها)
+      mediaRec.stop();
+    }
     else{isRec=false;micBtn.classList.remove('recording');micBtn.querySelector('i').className='ti ti-microphone';livebar.classList.remove('on');stopEQ();}
   }
 }
