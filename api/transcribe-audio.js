@@ -90,12 +90,11 @@ function resampleLinear(samples, fromRate, toRate) {
   return result;
 }
 
+// توجه: این پروژه Next.js نیست (یه Vercel Function ساده‌ست)، پس bodyParser.sizeLimit
+// اینجا معنی ندارد. سقف واقعی حجم درخواست توسط خود پلتفرم Vercel ثابت و ۴.۵MB است
+// و از کد قابل تغییر نیست؛ به همین خاطر سمت فرانت‌اند صدا رو به ۱۶kHz mono تبدیل و
+// محدود به ~۱.۵ دقیقه می‌کنیم تا از این سقف رد نشه.
 export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '15mb', // صدای WAV فشرده‌نشده حجمش بیشتر از webm/mp4 هست
-    },
-  },
   maxDuration: 60, // برای cold start (لود مدل) + پردازش؛ پلن Hobby ممکنه نیاز به Fluid Compute داشته باشه
 };
 
