@@ -1,1 +1,7 @@
-npm install @huggingface/transformers
+{
+  "name": "flow-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  }
+}
