@@ -958,6 +958,56 @@ function startRecSR(){
 let mediaRec=null;
 let audioChunks=[];
 
+// ── تبدیل صدای ضبط‌شده (هر فرمتی) به WAV ساده ──
+// Gemini فقط wav/mp3/aiff/aac/ogg/flac رو قبول می‌کنه، نه webm.
+// چون webm تنها فرمتی هست که اکثر WebViewهای کرومیومی (تلگرام) واقعاً درست encode می‌کنن،
+// اینجا بعد از ضبط، صدا رو decode کرده و به WAV (PCM ساده، همیشه قابل قبول) تبدیل می‌کنیم.
+async function blobToWav(blob){
+  const arrayBuffer=await blob.arrayBuffer();
+  const decodeCtx=new(window.AudioContext||window.webkitAudioContext)();
+  try{
+    const audioBuffer=await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+    return encodeWavMono16(audioBuffer);
+  }finally{
+    try{decodeCtx.close();}catch(e){}
+  }
+}
+
+function encodeWavMono16(audioBuffer){
+  const numChannels=audioBuffer.numberOfChannels;
+  const sampleRate=audioBuffer.sampleRate;
+  const numFrames=audioBuffer.length;
+  const channelData=[];
+  for(let c=0;c<numChannels;c++)channelData.push(audioBuffer.getChannelData(c));
+  // داون‌میکس به مونو (برای تشخیص گفتار کافیه و حجم رو هم کم می‌کنه)
+  const mono=new Float32Array(numFrames);
+  for(let i=0;i<numFrames;i++){
+    let sum=0;
+    for(let c=0;c<numChannels;c++)sum+=channelData[c][i];
+    mono[i]=sum/numChannels;
+  }
+  const dataSize=numFrames*2;
+  const buf=new ArrayBuffer(44+dataSize);
+  const view=new DataView(buf);
+  const ws=(off,str)=>{for(let i=0;i<str.length;i++)view.setUint8(off+i,str.charCodeAt(i));};
+  ws(0,'RIFF');view.setUint32(4,36+dataSize,true);ws(8,'WAVE');
+  ws(12,'fmt ');view.setUint32(16,16,true);
+  view.setUint16(20,1,true); // PCM
+  view.setUint16(22,1,true); // mono
+  view.setUint32(24,sampleRate,true);
+  view.setUint32(28,sampleRate*2,true); // byte rate
+  view.setUint16(32,2,true); // block align
+  view.setUint16(34,16,true); // bits per sample
+  ws(36,'data');view.setUint32(40,dataSize,true);
+  let off=44;
+  for(let i=0;i<numFrames;i++){
+    const s=Math.max(-1,Math.min(1,mono[i]));
+    view.setInt16(off,s<0?s*0x8000:s*0x7FFF,true);
+    off+=2;
+  }
+  return new Blob([buf],{type:'audio/wav'});
+}
+
 async function startRecMedia(){
   // اگه تلگرام WebApp هست، اول از API تلگرام اجازه بگیر
   if(isTelegramWebApp&&window.Telegram.WebApp.requestMicrophoneAccess){
@@ -1014,8 +1064,16 @@ async function startRecMedia(){
         isRec=false;
         return;
       }
-      const blob=new Blob(audioChunks,{type:actualMime});
-      await transcribeWithGemini(blob,actualMime);
+      const rawBlob=new Blob(audioChunks,{type:actualMime});
+      let finalBlob=rawBlob,finalMime=actualMime;
+      try{
+        finalBlob=await blobToWav(rawBlob);
+        finalMime='audio/wav';
+      }catch(convErr){
+        console.warn('WAV conversion failed, sending raw blob instead:',convErr,'mime was:',actualMime);
+        // اگه تبدیل شکست خورد، با همون فرمت خام امتحان می‌کنیم (بهتر از هیچی)
+      }
+      await transcribeWithGemini(finalBlob,finalMime);
       isRec=false;
     };
 
@@ -1079,7 +1137,10 @@ async function transcribeWithGemini(blob, mimeType){
       try{errBody=await resp.text();}catch(e){}
       console.error('Transcribe API HTTP error:',resp.status,errBody);
       ta.value=prev;
-      alert('خطا در سرویس تبدیل صدا به متن (کد '+resp.status+'). لطفاً دوباره تلاش کنید.');
+      let detail=errBody;
+      try{const j=JSON.parse(errBody);detail=j.error||j.message||errBody;}catch(e){}
+      if(detail&&detail.length>300)detail=detail.slice(0,300)+'…';
+      alert('خطا در سرویس تبدیل صدا به متن (کد '+resp.status+')'+(detail?(':\n'+detail):'')+'\nاین پیام رو کپی کن و بفرست تا بررسی کنم.');
       micBtn.querySelector('i').className='ti ti-microphone';
       autoH();updateBtn();updateTextDir();
       return;
