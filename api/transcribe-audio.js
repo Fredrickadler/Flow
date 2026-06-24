@@ -1,3 +1,11 @@
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '15mb' // صدای WAV فشرده‌نشده حجم بیشتری از webm داره؛ پیش‌فرض ۱mb برای ضبط‌های چند ثانیه‌ای کافی نیست
+    }
+  }
+};
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -13,6 +21,14 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Gemini API key not configured' });
   }
 
+  // Gemini فقط این فرمت‌های صوتی رو قبول می‌کنه — اگه چیز دیگه‌ای برسه بهتره زود و واضح خطا بدیم
+  const SUPPORTED_MIME = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/aiff', 'audio/aac', 'audio/ogg', 'audio/flac'];
+  const cleanMime = mimeType.split(';')[0].trim();
+  if (!SUPPORTED_MIME.includes(cleanMime)) {
+    console.error('Unsupported mimeType received:', cleanMime, '(raw:', mimeType, ')');
+    return res.status(400).json({ error: `فرمت صدا (${cleanMime}) توسط Gemini پشتیبانی نمی‌شود.` });
+  }
+
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -24,7 +40,7 @@ export default async function handler(req, res) {
             parts: [
               {
                 inline_data: {
-                  mime_type: mimeType.split(';')[0], // فقط mime type بدون codecs
+                  mime_type: cleanMime, // فقط mime type بدون codecs
                   data: audioData
                 }
               },
@@ -45,7 +61,7 @@ export default async function handler(req, res) {
 
     if (data.error) {
       console.error('Gemini error:', data.error);
-      return res.status(500).json({ error: data.error.message });
+      return res.status(502).json({ error: data.error.message });
     }
 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
