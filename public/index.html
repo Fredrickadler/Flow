@@ -967,26 +967,46 @@ async function blobToWav(blob){
   const decodeCtx=new(window.AudioContext||window.webkitAudioContext)();
   try{
     const audioBuffer=await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
-    return encodeWavMono16(audioBuffer);
+    return encodeWavMono16(audioBuffer,16000); // مستقیم به ۱۶kHz (نیاز Whisper) تا حجم ارسالی کم بشه
   }finally{
     try{decodeCtx.close();}catch(e){}
   }
 }
 
-function encodeWavMono16(audioBuffer){
+function resampleLinear(samples,fromRate,toRate){
+  if(fromRate===toRate)return samples;
+  const ratio=fromRate/toRate;
+  const newLength=Math.max(1,Math.round(samples.length/ratio));
+  const result=new Float32Array(newLength);
+  for(let i=0;i<newLength;i++){
+    const srcIndex=i*ratio;
+    const i0=Math.floor(srcIndex);
+    const i1=Math.min(i0+1,samples.length-1);
+    const frac=srcIndex-i0;
+    result[i]=samples[i0]*(1-frac)+samples[i1]*frac;
+  }
+  return result;
+}
+
+function encodeWavMono16(audioBuffer,targetSampleRate){
   const numChannels=audioBuffer.numberOfChannels;
   const sampleRate=audioBuffer.sampleRate;
   const numFrames=audioBuffer.length;
   const channelData=[];
   for(let c=0;c<numChannels;c++)channelData.push(audioBuffer.getChannelData(c));
   // داون‌میکس به مونو (برای تشخیص گفتار کافیه و حجم رو هم کم می‌کنه)
-  const mono=new Float32Array(numFrames);
+  let mono=new Float32Array(numFrames);
   for(let i=0;i<numFrames;i++){
     let sum=0;
     for(let c=0;c<numChannels;c++)sum+=channelData[c][i];
     mono[i]=sum/numChannels;
   }
-  const dataSize=numFrames*2;
+  let outRate=sampleRate;
+  if(targetSampleRate&&targetSampleRate!==sampleRate){
+    mono=resampleLinear(mono,sampleRate,targetSampleRate);
+    outRate=targetSampleRate;
+  }
+  const dataSize=mono.length*2;
   const buf=new ArrayBuffer(44+dataSize);
   const view=new DataView(buf);
   const ws=(off,str)=>{for(let i=0;i<str.length;i++)view.setUint8(off+i,str.charCodeAt(i));};
@@ -994,13 +1014,13 @@ function encodeWavMono16(audioBuffer){
   ws(12,'fmt ');view.setUint32(16,16,true);
   view.setUint16(20,1,true); // PCM
   view.setUint16(22,1,true); // mono
-  view.setUint32(24,sampleRate,true);
-  view.setUint32(28,sampleRate*2,true); // byte rate
+  view.setUint32(24,outRate,true);
+  view.setUint32(28,outRate*2,true); // byte rate
   view.setUint16(32,2,true); // block align
   view.setUint16(34,16,true); // bits per sample
   ws(36,'data');view.setUint32(40,dataSize,true);
   let off=44;
-  for(let i=0;i<numFrames;i++){
+  for(let i=0;i<mono.length;i++){
     const s=Math.max(-1,Math.min(1,mono[i]));
     view.setInt16(off,s<0?s*0x8000:s*0x7FFF,true);
     off+=2;
@@ -1072,6 +1092,13 @@ async function startRecMedia(){
       }catch(convErr){
         console.warn('WAV conversion failed, sending raw blob instead:',convErr,'mime was:',actualMime);
         // اگه تبدیل شکست خورد، با همون فرمت خام امتحان می‌کنیم (بهتر از هیچی)
+      }
+      // Vercel سقف سخت ۴.۵MB برای حجم درخواست داره؛ با احتساب overhead بیس۶۴+JSON
+      // حدوداً بالای ۳.۲MB خام خطر ریجکت‌شدن داره (یعنی ضبط حدود ۱۰۰ ثانیه با ۱۶kHz mono)
+      if(finalBlob.size>3.2*1024*1024){
+        alert('ضبط شما خیلی طولانیه و ممکنه سرور قبولش نکنه. لطفاً پیام کوتاه‌تری ضبط کنید (حداکثر حدود ۱.۵ دقیقه).');
+        isRec=false;
+        return;
       }
       await transcribeWithGemini(finalBlob,finalMime);
       isRec=false;
